@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/yourname/site/backend/internal/apperr"
+	"github.com/grigori-zagladkin/web-work/services/api/internal/apperr"
 )
 
 type HandlerFunc func(w http.ResponseWriter, r *http.Request) error

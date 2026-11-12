@@ -3,7 +3,11 @@ package httpx
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
+	"log/slog"
+	"net"
 	"net/http"
+	"runtime/debug"
 	"time"
 )
 
@@ -24,6 +28,7 @@ func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter 
 const (
 	REQUEST_ID_KEY     ctxKey = iota
 	REQUEST_ID_FIELD   string = "X-Request-ID"
+	NGINX_IP_PROPERTY         = "X-Real-IP"
 	MAX_REQUEST_ID_LEN int    = 64
 	METHOD                    = "method"
 	PATH                      = "path"
@@ -64,5 +69,47 @@ func RequestIDFrom(ctx context.Context) string {
 func LogRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		slog.InfoContext(r.Context(), "http request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.status,
+			"duration", time.Since(start),
+			"ip", ClientIP(r),
+			"request_id", RequestIDFrom(r.Context()),
+		)
+	})
+}
+
+func ClientIP(r *http.Request) string {
+	if ip := r.Header.Get(NGINX_IP_PROPERTY); ip != "" {
+		return ip
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func Recover(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			rec := recover()
+			if rec == nil {
+				return
+			}
+			if rec == http.ErrAbortHandler {
+				panic(rec)
+			}
+			slog.ErrorContext(r.Context(), "panic recovered",
+				"panic", fmt.Sprint(rec),
+				"stack", debug.Stack(),
+				"request_id", RequestIDFrom(r.Context()),
+			)
+			writeProblem(w, Problem{Type: "about:blank", Status: http.StatusInternalServerError, Instance: r.URL.Path})
+		}()
+		next.ServeHTTP(w, r)
 	})
 }
